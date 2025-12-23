@@ -1,0 +1,1356 @@
+===============================================================================
+COMPREHENSIVE RECEIPT SCANNER IMPLEMENTATION PLAN
+===============================================================================
+Project: Receipt Scanner with Monetization Features
+Version: 2.0
+Last Updated: December 23, 2025
+Target Launch: 4-6 weeks (MVP)
+
+===============================================================================
+EXECUTIVE SUMMARY
+===============================================================================
+
+GOAL: Build a receipt scanner application that enables users to earn money by 
+uploading receipts to cashback services (Fetch, Ibotta) and selling anonymized 
+receipt data to market research platforms.
+
+CORE FEATURES:
+- OCR-based receipt scanning with advanced preprocessing
+- Structured data extraction (date, total, items, merchant)
+- User-guided uploads to Fetch and Ibotta apps
+- Configurable logging (JSON + plain text) for earnings tracking
+- Dual upload methods: Shareable links (Google Drive) + data exports (CSV/JSON)
+- Government-grade AES-256 encryption for API keys
+- Passphrase prompt on app startup for security
+
+MONETIZATION STRATEGY:
+- Primary: Receipt uploads to Fetch/Ibotta ($0.02-$0.10 per receipt)
+- Secondary: Anonymized data sales to Nielsen/research panels ($0.05-$0.20 per receipt)
+- Tertiary: Affiliate links for related products (2-5% commission)
+- Combined potential: $0.10-$0.30 per receipt at scale
+
+USER ACQUISITION:
+- App store listings (ASO optimized for "receipt scanner rewards")
+- Partnerships with grocery stores and fintech apps
+- Referral programs and cross-promotions
+
+INSPIRATION:
+- danschultzer/receipt-scanner (Node.js): Advanced preprocessing, amount/date parsing
+- receipt-parser (Python): Structured data extraction with regex/heuristics
+
+===============================================================================
+TECHNICAL ARCHITECTURE
+===============================================================================
+
+PROJECT STRUCTURE:
+receipt-scanner-app/
+├── src/
+│   ├── main.py                    # Entry point with passphrase prompt
+│   ├── scanner/
+│   │   └── ocr.py                 # Enhanced OCR with preprocessing
+│   ├── models/
+│   │   └── receipt_model.py       # Receipt data model with parsing
+│   ├── utils/
+│   │   ├── logger.py              # Dual-format logging (JSON/text)
+│   │   ├── uploader.py            # Google Drive + export functionality
+│   │   ├── encryption.py          # AES-256 encryption for API keys
+│   │   └── image_processor.py     # Advanced image preprocessing
+│   └── apis/
+│       ├── fetch_api.py           # Fetch API client (future partnership)
+│       └── ibotta_api.py          # Ibotta API client (future partnership)
+├── config.json                    # Encrypted configuration with API keys
+├── requirements.txt               # Python dependencies
+├── logs/
+│   ├── app.log                    # Plain text logs
+│   └── earnings.log               # JSON earnings tracking
+└── exports/                       # User data exports directory
+
+TECHNOLOGY STACK:
+- Language: Python 3.8+
+- OCR Engine: Tesseract with pytesseract
+- Image Processing: OpenCV, Pillow
+- Encryption: cryptography (AES-256, FIPS 140-2 compliant)
+- Cloud Storage: google-api-python-client (Google Drive API)
+- HTTP Requests: requests
+- Logging: Python logging module with custom handlers
+- GUI (Future): Tkinter for settings interface
+
+===============================================================================
+DETAILED IMPLEMENTATION STEPS
+===============================================================================
+
+PHASE 1: FOUNDATION & SECURITY (Week 1)
+-------------------------------------------------------------------------------
+
+STEP 1.1: Update Dependencies (requirements.txt)
+Add the following packages:
+  - cryptography>=41.0.0        # AES-256 encryption
+  - requests>=2.31.0            # API calls
+  - google-api-python-client>=2.100.0  # Google Drive integration
+  - google-auth-httplib2>=0.1.1
+  - google-auth-oauthlib>=1.1.0
+  - opencv-python>=4.8.0        # Advanced image processing
+  - pytesseract>=0.3.10         # OCR
+  - Pillow>=10.0.0              # Image manipulation
+  - python-dateutil>=2.8.2      # Date parsing
+
+STEP 1.2: Implement AES-256 Encryption (src/utils/encryption.py)
+Create new file with the following functionality:
+  - Generate encryption key from user passphrase using PBKDF2
+  - Encrypt/decrypt API keys using Fernet (AES-256-CBC)
+  - Store encrypted keys as base64 in config.json
+  - Use salt for key derivation (stored in config)
+
+Code Pattern:
+```python
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+import base64
+import os
+
+class KeyEncryption:
+    def __init__(self, passphrase: str, salt: bytes = None):
+        if salt is None:
+            salt = os.urandom(16)
+        self.salt = salt
+        kdf = PBKDF2(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        key = base64.urlsafe_b64encode(kdf.derive(passphrase.encode()))
+        self.cipher = Fernet(key)
+    
+    def encrypt(self, data: str) -> str:
+        return self.cipher.encrypt(data.encode()).decode()
+    
+    def decrypt(self, encrypted_data: str) -> str:
+        return self.cipher.decrypt(encrypted_data.encode()).decode()
+```
+
+STEP 1.3: Add Passphrase Prompt to Main Entry Point (src/main.py)
+Modify main.py to:
+  - Prompt user for passphrase on startup using getpass module
+  - Load and decrypt config.json with API keys
+  - Validate passphrase (retry on failure)
+  - Store decrypted keys in memory only (never write to disk)
+
+Code Pattern:
+```python
+import getpass
+from utils.encryption import KeyEncryption
+import json
+
+def load_secure_config():
+    passphrase = getpass.getpass("Enter passphrase to decrypt API keys: ")
+    
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+    
+    salt = base64.b64decode(config['encryption']['salt'])
+    encryptor = KeyEncryption(passphrase, salt)
+    
+    # Decrypt API keys
+    config['api_keys']['fetch'] = encryptor.decrypt(config['api_keys']['fetch'])
+    config['api_keys']['ibotta'] = encryptor.decrypt(config['api_keys']['ibotta'])
+    
+    return config
+```
+
+STEP 1.4: Update Configuration File (config.json)
+Extend with new sections:
+```json
+{
+  "encryption": {
+    "salt": "base64_encoded_salt_here",
+    "algorithm": "AES-256-CBC"
+  },
+  "api_keys": {
+    "fetch": "encrypted_api_key_here",
+    "ibotta": "encrypted_api_key_here",
+    "google_drive": "encrypted_credentials_path_here"
+  },
+  "logging": {
+    "format": "both",  // "json", "text", or "both"
+    "level": "INFO",
+    "app_log_file": "logs/app.log",
+    "earnings_log_file": "logs/earnings.log"
+  },
+  "upload": {
+    "methods": ["google_drive", "csv_export", "json_export"],
+    "google_drive": {
+      "enabled": true,
+      "share_publicly": true
+    },
+    "exports_directory": "exports/"
+  },
+  "ocr": {
+    "language": "eng",
+    "psm": 6,
+    "preprocessing": ["grayscale", "blur", "threshold", "rotation_correction"]
+  },
+  "parsing": {
+    "date_formats": ["MM/DD/YYYY", "DD/MM/YYYY", "YYYY-MM-DD"],
+    "currency_symbols": ["$", "€", "£"],
+    "total_keywords": ["total", "amount", "grand total", "balance"]
+  }
+}
+```
+
+-------------------------------------------------------------------------------
+PHASE 2: ADVANCED PARSING & LOGGING (Week 2)
+-------------------------------------------------------------------------------
+
+STEP 2.1: Create Dual-Format Logging System (src/utils/logger.py)
+Implement custom logging with two handlers:
+  - JSONHandler: Structured logs for earnings tracking
+  - StreamHandler/FileHandler: Plain text for debugging
+
+Features:
+  - Configurable format via config.json
+  - Separate files for app logs and earnings logs
+  - Thread-safe for concurrent operations
+  - Rotation for large log files
+
+Code Pattern:
+```python
+import logging
+import json
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        log_data = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'level': record.levelname,
+            'module': record.module,
+            'message': record.getMessage(),
+            'extra': getattr(record, 'extra', {})
+        }
+        return json.dumps(log_data)
+
+class EarningsLogger:
+    def __init__(self, config):
+        self.logger = logging.getLogger('earnings')
+        self.logger.setLevel(logging.INFO)
+        
+        handler = RotatingFileHandler(
+            config['logging']['earnings_log_file'],
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5
+        )
+        handler.setFormatter(JSONFormatter())
+        self.logger.addHandler(handler)
+    
+    def log_receipt_upload(self, service, receipt_id, amount, currency='points'):
+        self.logger.info('Receipt uploaded', extra={
+            'service': service,
+            'receipt_id': receipt_id,
+            'amount': amount,
+            'currency': currency,
+            'timestamp': datetime.utcnow().isoformat()
+        })
+    
+    def log_export(self, method, receipt_id, file_path):
+        self.logger.info('Receipt exported', extra={
+            'method': method,
+            'receipt_id': receipt_id,
+            'file_path': file_path
+        })
+
+def setup_logging(config):
+    # Setup both plain text and JSON logging based on config
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, config['logging']['level']))
+    
+    if config['logging']['format'] in ['text', 'both']:
+        text_handler = RotatingFileHandler(
+            config['logging']['app_log_file'],
+            maxBytes=10*1024*1024,
+            backupCount=5
+        )
+        text_handler.setFormatter(
+            logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        )
+        root_logger.addHandler(text_handler)
+    
+    if config['logging']['format'] in ['json', 'both']:
+        json_handler = RotatingFileHandler(
+            config['logging']['app_log_file'].replace('.log', '_json.log'),
+            maxBytes=10*1024*1024,
+            backupCount=5
+        )
+        json_handler.setFormatter(JSONFormatter())
+        root_logger.addHandler(json_handler)
+    
+    return EarningsLogger(config)
+```
+
+STEP 2.2: Enhance Receipt Model with Regex Parsing (src/models/receipt_model.py)
+Inspired by receipt-parser repo, implement robust parsing:
+
+Features:
+  - Extract merchant name (top lines of receipt)
+  - Parse date using multiple formats
+  - Extract total amount (prioritize "total" keywords)
+  - Parse individual items with prices
+  - Extract tax, subtotal, payment method
+  - Handle multiple currencies and formats
+
+Code Pattern:
+```python
+import re
+from datetime import datetime
+from dateutil import parser as date_parser
+
+class Receipt:
+    def __init__(self):
+        self.receipt_id = None
+        self.merchant_name = None
+        self.date = None
+        self.total_amount = None
+        self.subtotal = None
+        self.tax = None
+        self.items = []
+        self.currency = 'USD'
+        self.raw_text = None
+        self.confidence_score = 0.0
+    
+    def parse_data(self, ocr_text, config):
+        """
+        Parse OCR text into structured receipt data
+        Inspired by receipt-parser and danschultzer/receipt-scanner
+        """
+        self.raw_text = ocr_text
+        lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
+        
+        # Extract merchant (usually first 1-3 lines)
+        self.merchant_name = self._extract_merchant(lines[:3])
+        
+        # Extract date using multiple patterns
+        self.date = self._extract_date(ocr_text, config['parsing']['date_formats'])
+        
+        # Extract total amount
+        self.total_amount = self._extract_total(
+            ocr_text, 
+            config['parsing']['total_keywords'],
+            config['parsing']['currency_symbols']
+        )
+        
+        # Extract items
+        self.items = self._extract_items(lines, config['parsing']['currency_symbols'])
+        
+        # Extract tax and subtotal
+        self.tax = self._extract_field(ocr_text, ['tax', 'vat', 'gst'])
+        self.subtotal = self._extract_field(ocr_text, ['subtotal', 'sub total', 'sub-total'])
+        
+        # Calculate confidence score
+        self.confidence_score = self._calculate_confidence()
+        
+        return self
+    
+    def _extract_merchant(self, top_lines):
+        """Extract merchant name from top lines"""
+        # Usually the first non-empty line with most uppercase letters
+        for line in top_lines:
+            if len(line) > 3 and sum(1 for c in line if c.isupper()) / len(line) > 0.5:
+                return line
+        return top_lines[0] if top_lines else "Unknown Merchant"
+    
+    def _extract_date(self, text, date_formats):
+        """Extract date using regex and dateutil parser"""
+        # Try explicit date patterns first
+        date_patterns = [
+            r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}',
+            r'\d{4}[-/]\d{1,2}[-/]\d{1,2}',
+            r'[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}'
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, text)
+            if match:
+                try:
+                    return date_parser.parse(match.group(0)).strftime('%Y-%m-%d')
+                except:
+                    continue
+        
+        return None
+    
+    def _extract_total(self, text, keywords, currency_symbols):
+        """Extract total amount prioritizing 'total' keywords"""
+        # Build regex pattern for totals
+        currency_pattern = '|'.join(re.escape(sym) for sym in currency_symbols)
+        
+        # Look for "total" followed by amount
+        for keyword in keywords:
+            pattern = rf'{keyword}\s*[:\s]*({currency_pattern})?\s*(\d+[,.]?\d*\.?\d{{2}})'
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                amount_str = match.group(2).replace(',', '')
+                return float(amount_str)
+        
+        # Fallback: Find largest amount in text
+        amount_pattern = rf'({currency_pattern})?\s*(\d+[,.]?\d*\.?\d{{2}})'
+        amounts = re.findall(amount_pattern, text)
+        if amounts:
+            return max(float(amt[1].replace(',', '')) for amt in amounts)
+        
+        return None
+    
+    def _extract_items(self, lines, currency_symbols):
+        """Extract individual line items with prices"""
+        items = []
+        currency_pattern = '|'.join(re.escape(sym) for sym in currency_symbols)
+        item_pattern = rf'(.+?)\s+({currency_pattern})?\s*(\d+\.?\d{{2}})'
+        
+        for line in lines:
+            match = re.search(item_pattern, line)
+            if match:
+                item_name = match.group(1).strip()
+                item_price = float(match.group(3))
+                items.append({'name': item_name, 'price': item_price})
+        
+        return items
+    
+    def _extract_field(self, text, keywords):
+        """Generic field extraction for tax, subtotal, etc."""
+        for keyword in keywords:
+            pattern = rf'{keyword}\s*[:\s]*\$?\s*(\d+\.?\d{{2}})'
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return float(match.group(1))
+        return None
+    
+    def _calculate_confidence(self):
+        """Calculate parsing confidence score (0-1)"""
+        score = 0.0
+        if self.merchant_name: score += 0.2
+        if self.date: score += 0.2
+        if self.total_amount: score += 0.3
+        if self.items: score += 0.2
+        if self.tax or self.subtotal: score += 0.1
+        return min(score, 1.0)
+    
+    def to_dict(self):
+        """Export as dictionary for logging/export"""
+        return {
+            'receipt_id': self.receipt_id,
+            'merchant': self.merchant_name,
+            'date': self.date,
+            'total': self.total_amount,
+            'subtotal': self.subtotal,
+            'tax': self.tax,
+            'items': self.items,
+            'currency': self.currency,
+            'confidence': self.confidence_score
+        }
+```
+
+STEP 2.3: Enhance OCR with Advanced Preprocessing (src/scanner/ocr.py)
+Inspired by danschultzer/receipt-scanner preprocessing:
+
+Add preprocessing chain:
+  - Grayscale conversion
+  - Gaussian blur for noise reduction
+  - Adaptive thresholding
+  - Rotation/skew correction using OpenCV
+  - Perspective correction for angled photos
+  - Contrast enhancement
+
+Code Pattern:
+```python
+import cv2
+import numpy as np
+import pytesseract
+from PIL import Image
+
+class OCRScanner:
+    def __init__(self, config):
+        self.config = config
+        self.preprocessing_steps = config['ocr']['preprocessing']
+    
+    def scan(self, image_path):
+        """Scan receipt image with preprocessing"""
+        # Load image
+        image = cv2.imread(image_path)
+        
+        # Apply preprocessing chain
+        processed = image
+        for step in self.preprocessing_steps:
+            if step == 'grayscale':
+                processed = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+            elif step == 'blur':
+                processed = cv2.GaussianBlur(processed, (5, 5), 0)
+            elif step == 'threshold':
+                processed = cv2.adaptiveThreshold(
+                    processed, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY, 11, 2
+                )
+            elif step == 'rotation_correction':
+                processed = self._correct_rotation(processed)
+        
+        # Perform OCR
+        custom_config = f'--psm {self.config["ocr"]["psm"]} -l {self.config["ocr"]["language"]}'
+        text = pytesseract.image_to_string(processed, config=custom_config)
+        
+        return text
+    
+    def _correct_rotation(self, image):
+        """Correct skew using OpenCV"""
+        coords = np.column_stack(np.where(image > 0))
+        angle = cv2.minAreaRect(coords)[-1]
+        
+        if angle < -45:
+            angle = -(90 + angle)
+        else:
+            angle = -angle
+        
+        (h, w) = image.shape[:2]
+        center = (w // 2, h // 2)
+        M = cv2.getRotationMatrix2D(center, angle, 1.0)
+        rotated = cv2.warpAffine(
+            image, M, (w, h),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REPLICATE
+        )
+        
+        return rotated
+```
+
+-------------------------------------------------------------------------------
+PHASE 3: USER-GUIDED UPLOADS (Week 3)
+-------------------------------------------------------------------------------
+
+STEP 3.1: Implement Google Drive Upload (src/utils/uploader.py)
+Create shareable links for parsed receipt data:
+
+Features:
+  - Authenticate with Google Drive API
+  - Upload receipt image + parsed JSON data
+  - Generate public shareable link
+  - Handle OAuth2 flow for first-time setup
+
+Code Pattern:
+```python
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+import json
+import os
+
+class GoogleDriveUploader:
+    SCOPES = ['https://www.googleapis.com/auth/drive.file']
+    
+    def __init__(self, credentials_path):
+        self.credentials_path = credentials_path
+        self.service = self._authenticate()
+    
+    def _authenticate(self):
+        """Authenticate with Google Drive API"""
+        creds = None
+        token_path = 'token.json'
+        
+        if os.path.exists(token_path):
+            creds = Credentials.from_authorized_user_file(token_path, self.SCOPES)
+        
+        if not creds or not creds.valid:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                self.credentials_path, self.SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+            with open(token_path, 'w') as token:
+                token.write(creds.to_json())
+        
+        return build('drive', 'v3', credentials=creds)
+    
+    def upload_receipt(self, receipt_dict, image_path=None):
+        """Upload receipt data and image to Google Drive"""
+        # Create folder for this receipt
+        folder_metadata = {
+            'name': f'Receipt_{receipt_dict["receipt_id"]}',
+            'mimeType': 'application/vnd.google-apps.folder'
+        }
+        folder = self.service.files().create(body=folder_metadata, fields='id').execute()
+        folder_id = folder['id']
+        
+        # Upload JSON data
+        json_path = f'temp_receipt_{receipt_dict["receipt_id"]}.json'
+        with open(json_path, 'w') as f:
+            json.dump(receipt_dict, f, indent=2)
+        
+        json_metadata = {
+            'name': 'receipt_data.json',
+            'parents': [folder_id]
+        }
+        json_media = MediaFileUpload(json_path, mimetype='application/json')
+        json_file = self.service.files().create(
+            body=json_metadata,
+            media_body=json_media,
+            fields='id'
+        ).execute()
+        
+        # Upload image if provided
+        if image_path:
+            image_metadata = {
+                'name': 'receipt_image.jpg',
+                'parents': [folder_id]
+            }
+            image_media = MediaFileUpload(image_path, mimetype='image/jpeg')
+            self.service.files().create(
+                body=image_metadata,
+                media_body=image_media
+            ).execute()
+        
+        # Make folder publicly shareable
+        permission = {
+            'type': 'anyone',
+            'role': 'reader'
+        }
+        self.service.permissions().create(
+            fileId=folder_id,
+            body=permission
+        ).execute()
+        
+        # Generate shareable link
+        folder_link = f"https://drive.google.com/drive/folders/{folder_id}"
+        
+        # Cleanup temp file
+        os.remove(json_path)
+        
+        return folder_link
+```
+
+STEP 3.2: Implement Data Export Functionality (src/utils/uploader.py)
+Export parsed data to CSV and JSON for manual uploads:
+
+Code Pattern:
+```python
+import csv
+import json
+from datetime import datetime
+
+class DataExporter:
+    def __init__(self, export_dir):
+        self.export_dir = export_dir
+        os.makedirs(export_dir, exist_ok=True)
+    
+    def export_to_json(self, receipt_dict):
+        """Export single receipt to JSON"""
+        filename = f'receipt_{receipt_dict["receipt_id"]}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+        filepath = os.path.join(self.export_dir, filename)
+        
+        with open(filepath, 'w') as f:
+            json.dump(receipt_dict, f, indent=2)
+        
+        return filepath
+    
+    def export_to_csv(self, receipt_dict):
+        """Export single receipt to CSV"""
+        filename = f'receipt_{receipt_dict["receipt_id"]}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        filepath = os.path.join(self.export_dir, filename)
+        
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Field', 'Value'])
+            writer.writerow(['Receipt ID', receipt_dict['receipt_id']])
+            writer.writerow(['Merchant', receipt_dict['merchant']])
+            writer.writerow(['Date', receipt_dict['date']])
+            writer.writerow(['Total', receipt_dict['total']])
+            writer.writerow(['Tax', receipt_dict['tax']])
+            writer.writerow(['Items', len(receipt_dict['items'])])
+            writer.writerow(['Confidence', receipt_dict['confidence']])
+            writer.writerow([])
+            writer.writerow(['Item Name', 'Price'])
+            for item in receipt_dict['items']:
+                writer.writerow([item['name'], item['price']])
+        
+        return filepath
+    
+    def export_batch_summary(self, receipts_list):
+        """Export summary of multiple receipts to CSV"""
+        filename = f'receipts_summary_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        filepath = os.path.join(self.export_dir, filename)
+        
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=[
+                'receipt_id', 'merchant', 'date', 'total', 'tax', 'item_count', 'confidence'
+            ])
+            writer.writeheader()
+            for receipt in receipts_list:
+                writer.writerow({
+                    'receipt_id': receipt['receipt_id'],
+                    'merchant': receipt['merchant'],
+                    'date': receipt['date'],
+                    'total': receipt['total'],
+                    'tax': receipt['tax'],
+                    'item_count': len(receipt['items']),
+                    'confidence': receipt['confidence']
+                })
+        
+        return filepath
+```
+
+-------------------------------------------------------------------------------
+PHASE 4: INTEGRATION & TESTING (Week 4)
+-------------------------------------------------------------------------------
+
+STEP 4.1: Integrate Complete Flow in Main Application (src/main.py)
+Update main.py to orchestrate the entire workflow:
+
+Complete Flow:
+1. Prompt for passphrase and load encrypted config
+2. Setup dual logging (JSON + plain text)
+3. Scan receipt image with OCR
+4. Parse extracted text into structured data
+5. Log parsing results
+6. Upload via Google Drive (shareable link)
+7. Export to CSV/JSON
+8. Log earnings and upload status
+9. Display summary to user
+
+Code Pattern:
+```python
+import sys
+import os
+import getpass
+import json
+import base64
+import uuid
+from datetime import datetime
+
+# Import custom modules
+from scanner.ocr import OCRScanner
+from models.receipt_model import Receipt
+from utils.encryption import KeyEncryption
+from utils.logger import setup_logging, EarningsLogger
+from utils.uploader import GoogleDriveUploader, DataExporter
+
+def load_secure_config():
+    """Load and decrypt configuration"""
+    passphrase = getpass.getpass("Enter passphrase to decrypt API keys: ")
+    
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+    
+    # Decrypt API keys
+    salt = base64.b64decode(config['encryption']['salt'])
+    encryptor = KeyEncryption(passphrase, salt)
+    
+    try:
+        if 'api_keys' in config:
+            for key in config['api_keys']:
+                if config['api_keys'][key]:
+                    config['api_keys'][key] = encryptor.decrypt(config['api_keys'][key])
+    except Exception as e:
+        print("Error: Invalid passphrase or corrupted config")
+        sys.exit(1)
+    
+    return config
+
+def process_receipt(image_path, config, logger, earnings_logger):
+    """Process single receipt through complete workflow"""
+    print(f"\n{'='*60}")
+    print(f"Processing receipt: {os.path.basename(image_path)}")
+    print(f"{'='*60}\n")
+    
+    # Generate unique receipt ID
+    receipt_id = str(uuid.uuid4())[:8]
+    
+    try:
+        # Step 1: OCR Scanning
+        print("[1/6] Performing OCR scan...")
+        scanner = OCRScanner(config)
+        ocr_text = scanner.scan(image_path)
+        logger.info(f"OCR completed for receipt {receipt_id}")
+        print("✓ OCR completed")
+        
+        # Step 2: Data Parsing
+        print("[2/6] Parsing receipt data...")
+        receipt = Receipt()
+        receipt.receipt_id = receipt_id
+        receipt.parse_data(ocr_text, config)
+        logger.info(f"Parsing completed with confidence: {receipt.confidence_score}")
+        print(f"✓ Parsing completed (Confidence: {receipt.confidence_score:.2%})")
+        
+        # Display parsed data
+        print(f"\nParsed Data:")
+        print(f"  Merchant: {receipt.merchant_name}")
+        print(f"  Date: {receipt.date}")
+        print(f"  Total: ${receipt.total_amount:.2f}" if receipt.total_amount else "  Total: N/A")
+        print(f"  Items: {len(receipt.items)}")
+        
+        # Step 3: Google Drive Upload
+        print("\n[3/6] Uploading to Google Drive...")
+        drive_uploader = GoogleDriveUploader(config['api_keys']['google_drive'])
+        drive_link = drive_uploader.upload_receipt(receipt.to_dict(), image_path)
+        logger.info(f"Uploaded to Google Drive: {drive_link}")
+        earnings_logger.log_export('google_drive', receipt_id, drive_link)
+        print(f"✓ Uploaded to Google Drive")
+        print(f"  Shareable Link: {drive_link}")
+        
+        # Step 4: CSV Export
+        print("\n[4/6] Exporting to CSV...")
+        exporter = DataExporter(config['upload']['exports_directory'])
+        csv_path = exporter.export_to_csv(receipt.to_dict())
+        logger.info(f"Exported to CSV: {csv_path}")
+        earnings_logger.log_export('csv', receipt_id, csv_path)
+        print(f"✓ Exported to CSV: {csv_path}")
+        
+        # Step 5: JSON Export
+        print("\n[5/6] Exporting to JSON...")
+        json_path = exporter.export_to_json(receipt.to_dict())
+        logger.info(f"Exported to JSON: {json_path}")
+        earnings_logger.log_export('json', receipt_id, json_path)
+        print(f"✓ Exported to JSON: {json_path}")
+        
+        # Step 6: Earnings Estimation
+        print("\n[6/6] Estimating earnings potential...")
+        fetch_estimate = 0.05  # $0.02-$0.10 average
+        ibotta_estimate = 0.05
+        data_sale_estimate = 0.10  # $0.05-$0.20 average
+        total_estimate = fetch_estimate + ibotta_estimate + data_sale_estimate
+        
+        print(f"✓ Earnings Estimate:")
+        print(f"  Fetch: ${fetch_estimate:.2f}")
+        print(f"  Ibotta: ${ibotta_estimate:.2f}")
+        print(f"  Data Sale: ${data_sale_estimate:.2f}")
+        print(f"  Total Potential: ${total_estimate:.2f}")
+        
+        # Log earnings estimate
+        earnings_logger.log_receipt_upload('Fetch', receipt_id, fetch_estimate, 'USD')
+        earnings_logger.log_receipt_upload('Ibotta', receipt_id, ibotta_estimate, 'USD')
+        earnings_logger.log_receipt_upload('Data Sale', receipt_id, data_sale_estimate, 'USD')
+        
+        print(f"\n{'='*60}")
+        print("Receipt processing complete!")
+        print(f"{'='*60}\n")
+        
+        # User instructions
+        print("Next Steps:")
+        print("1. Open Fetch app and manually upload using the shareable link or CSV")
+        print("2. Open Ibotta app and manually upload using the shareable link or CSV")
+        print("3. Consider submitting anonymized data to Nielsen or research panels")
+        
+        return receipt
+        
+    except Exception as e:
+        logger.error(f"Error processing receipt {receipt_id}: {str(e)}")
+        print(f"✗ Error: {str(e)}")
+        return None
+
+def main():
+    """Main application entry point"""
+    print("\n" + "="*60)
+    print(" RECEIPT SCANNER - MONETIZATION EDITION")
+    print("="*60 + "\n")
+    
+    # Load configuration
+    print("Loading configuration...")
+    config = load_secure_config()
+    print("✓ Configuration loaded\n")
+    
+    # Setup logging
+    logger = setup_logging(config)
+    earnings_logger = EarningsLogger(config)
+    
+    # Get receipt image path
+    if len(sys.argv) < 2:
+        image_path = input("Enter path to receipt image: ").strip()
+    else:
+        image_path = sys.argv[1]
+    
+    # Validate path
+    if not os.path.exists(image_path):
+        print(f"Error: File not found: {image_path}")
+        sys.exit(1)
+    
+    # Process receipt
+    receipt = process_receipt(image_path, config, logger, earnings_logger)
+    
+    # Ask if user wants to process another
+    while True:
+        response = input("\nProcess another receipt? (y/n): ").strip().lower()
+        if response == 'y':
+            image_path = input("Enter path to receipt image: ").strip()
+            if os.path.exists(image_path):
+                process_receipt(image_path, config, logger, earnings_logger)
+            else:
+                print(f"Error: File not found: {image_path}")
+        else:
+            break
+    
+    print("\nThank you for using Receipt Scanner!")
+    print("Check logs/ directory for detailed earnings tracking.\n")
+
+if __name__ == "__main__":
+    main()
+```
+
+STEP 4.2: Create Initial Setup Script (setup.py)
+Help users configure encryption and API keys on first run:
+
+Code Pattern:
+```python
+import os
+import json
+import base64
+import getpass
+from utils.encryption import KeyEncryption
+
+def setup_application():
+    """Initial setup wizard for Receipt Scanner"""
+    print("\n" + "="*60)
+    print(" RECEIPT SCANNER - INITIAL SETUP")
+    print("="*60 + "\n")
+    
+    # Create directories
+    os.makedirs('logs', exist_ok=True)
+    os.makedirs('exports', exist_ok=True)
+    
+    # Generate encryption salt
+    salt = os.urandom(16)
+    
+    # Get passphrase
+    print("Step 1: Create a secure passphrase")
+    print("This will be used to encrypt your API keys.")
+    passphrase = getpass.getpass("Enter passphrase: ")
+    passphrase_confirm = getpass.getpass("Confirm passphrase: ")
+    
+    if passphrase != passphrase_confirm:
+        print("Error: Passphrases do not match!")
+        return
+    
+    encryptor = KeyEncryption(passphrase, salt)
+    
+    # Get API keys
+    print("\nStep 2: Enter API keys (press Enter to skip)")
+    fetch_key = input("Fetch API Key: ").strip()
+    ibotta_key = input("Ibotta API Key: ").strip()
+    
+    print("\nStep 3: Google Drive setup")
+    print("Download OAuth credentials from Google Cloud Console")
+    print("and save as 'credentials.json' in the project root.")
+    google_creds = input("Path to Google credentials.json: ").strip() or "credentials.json"
+    
+    # Encrypt keys
+    encrypted_fetch = encryptor.encrypt(fetch_key) if fetch_key else ""
+    encrypted_ibotta = encryptor.encrypt(ibotta_key) if ibotta_key else ""
+    encrypted_google = encryptor.encrypt(google_creds) if google_creds else ""
+    
+    # Create config
+    config = {
+        "encryption": {
+            "salt": base64.b64encode(salt).decode(),
+            "algorithm": "AES-256-CBC"
+        },
+        "api_keys": {
+            "fetch": encrypted_fetch,
+            "ibotta": encrypted_ibotta,
+            "google_drive": encrypted_google
+        },
+        "logging": {
+            "format": "both",
+            "level": "INFO",
+            "app_log_file": "logs/app.log",
+            "earnings_log_file": "logs/earnings.log"
+        },
+        "upload": {
+            "methods": ["google_drive", "csv_export", "json_export"],
+            "google_drive": {
+                "enabled": True,
+                "share_publicly": True
+            },
+            "exports_directory": "exports/"
+        },
+        "ocr": {
+            "language": "eng",
+            "psm": 6,
+            "preprocessing": ["grayscale", "blur", "threshold", "rotation_correction"]
+        },
+        "parsing": {
+            "date_formats": ["MM/DD/YYYY", "DD/MM/YYYY", "YYYY-MM-DD"],
+            "currency_symbols": ["$", "€", "£"],
+            "total_keywords": ["total", "amount", "grand total", "balance"]
+        }
+    }
+    
+    # Save config
+    with open('config.json', 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    print("\n✓ Setup complete!")
+    print("Configuration saved to config.json")
+    print("Run 'python src/main.py <receipt_image>' to start scanning.\n")
+
+if __name__ == "__main__":
+    setup_application()
+```
+
+STEP 4.3: Testing Protocol
+Create comprehensive test plan:
+
+Test Cases:
+1. **OCR Accuracy**: Test with 10+ receipt images (grocery, restaurant, retail)
+2. **Parsing Validation**: Manually verify extracted data vs. actual receipts
+3. **Encryption**: Test passphrase encryption/decryption
+4. **Logging**: Verify both JSON and text logs are created
+5. **Google Drive**: Test shareable link generation
+6. **Exports**: Validate CSV/JSON format
+7. **Error Handling**: Test with corrupted images, wrong passphrase
+8. **Performance**: Measure processing time per receipt
+
+Test Script (tests/test_receipt_processing.py):
+```python
+import unittest
+import os
+from src.scanner.ocr import OCRScanner
+from src.models.receipt_model import Receipt
+
+class TestReceiptProcessing(unittest.TestCase):
+    def setUp(self):
+        self.config = {
+            'ocr': {
+                'language': 'eng',
+                'psm': 6,
+                'preprocessing': ['grayscale', 'blur', 'threshold']
+            },
+            'parsing': {
+                'date_formats': ['MM/DD/YYYY'],
+                'currency_symbols': ['$'],
+                'total_keywords': ['total']
+            }
+        }
+    
+    def test_ocr_scan(self):
+        """Test OCR on sample receipt"""
+        scanner = OCRScanner(self.config)
+        text = scanner.scan('tests/sample_receipts/receipt1.jpg')
+        self.assertIsNotNone(text)
+        self.assertTrue(len(text) > 0)
+    
+    def test_date_extraction(self):
+        """Test date parsing"""
+        receipt = Receipt()
+        sample_text = "Store Name\n12/23/2025\nTotal $45.99"
+        receipt.parse_data(sample_text, self.config)
+        self.assertEqual(receipt.date, '2025-12-23')
+    
+    def test_total_extraction(self):
+        """Test total amount parsing"""
+        receipt = Receipt()
+        sample_text = "Store Name\n12/23/2025\nTotal $45.99"
+        receipt.parse_data(sample_text, self.config)
+        self.assertEqual(receipt.total_amount, 45.99)
+    
+    def test_confidence_score(self):
+        """Test confidence calculation"""
+        receipt = Receipt()
+        sample_text = "Store Name\n12/23/2025\nTotal $45.99"
+        receipt.parse_data(sample_text, self.config)
+        self.assertGreater(receipt.confidence_score, 0.5)
+
+if __name__ == '__main__':
+    unittest.main()
+```
+
+===============================================================================
+MONETIZATION STRATEGY DETAILS
+===============================================================================
+
+REVENUE STREAMS:
+
+1. FETCH REWARDS ($0.02-$0.10 per receipt)
+   - Partnership required: Apply at https://business.fetch.com/
+   - Manual upload method: User opens Fetch app and submits via shareable link
+   - Estimated volume: 1,000 receipts/month = $50-$100/month
+   - Scaling: 10,000 receipts/month = $500-$1,000/month
+
+2. IBOTTA ($0.02-$0.10 per receipt)
+   - Partnership required: Apply at https://cpg.ibotta.com/
+   - Manual upload method: User opens Ibotta app and submits via shareable link
+   - Estimated volume: 1,000 receipts/month = $50-$100/month
+   - Scaling: 10,000 receipts/month = $500-$1,000/month
+
+3. DATA SALES ($0.05-$0.20 per receipt)
+   - Target platforms: Nielsen, ResearchNow, Swagbucks
+   - Anonymize data: Remove personal info, aggregate trends
+   - Estimated volume: 1,000 receipts/month = $100-$200/month
+   - Scaling: 10,000 receipts/month = $1,000-$2,000/month
+
+4. AFFILIATE LINKS (2-5% commission)
+   - Integrate Rakuten, Amazon Associates
+   - Parse brands from receipts, suggest affiliate links
+   - Estimated: $0.05-$0.20 per receipt (if 10% click-through)
+   - Scaling: Passive income, grows with user base
+
+COMBINED POTENTIAL:
+- Per Receipt: $0.10-$0.30 (conservative estimate)
+- 1,000 receipts/month: $200-$400/month
+- 10,000 receipts/month: $2,000-$4,000/month
+- 100,000 receipts/month: $20,000-$40,000/month
+
+USER ACQUISITION TARGET:
+- Month 1-2: 100 active users (10 receipts/user/month) = 1,000 receipts
+- Month 3-6: 1,000 active users = 10,000 receipts
+- Month 7-12: 10,000 active users = 100,000 receipts
+
+===============================================================================
+USER ACQUISITION STRATEGY
+===============================================================================
+
+APP STORE OPTIMIZATION (ASO):
+
+1. Keywords:
+   - Primary: "receipt scanner rewards", "cashback receipt", "receipt money"
+   - Secondary: "grocery scanner", "earn from receipts", "receipt OCR"
+   - Long-tail: "scan receipts for cash", "receipt to money app"
+
+2. Listing Optimization:
+   - Title: "Receipt Scanner - Earn Cash Rewards"
+   - Subtitle: "Scan, Earn $0.10-$0.30 per Receipt"
+   - Description: Highlight OCR, multiple upload methods, earnings tracking
+   - Screenshots: Show scanning process, parsed data, earnings dashboard
+   - Icon: Simple receipt + dollar sign design
+
+3. Reviews Strategy:
+   - In-app prompts after 5 successful scans
+   - Incentivize: "Rate 5 stars for bonus tips"
+   - Respond to all reviews within 24 hours
+
+PARTNERSHIP STRATEGY:
+
+1. Grocery Stores:
+   - Pitch: "Increase customer engagement with digital receipts"
+   - Offer: Co-branded campaigns, in-store promotions
+   - Pilot: Start with 2-3 local stores, measure foot traffic
+
+2. Fintech Apps:
+   - Pitch: "Add receipt scanning to your budgeting app"
+   - Offer: White-label OCR API, revenue share
+   - Targets: Mint, YNAB, Personal Capital
+
+3. Coupon/Cashback Platforms:
+   - Pitch: "Streamline receipt submission for your users"
+   - Offer: API integration, referral program
+   - Targets: Honey, RetailMeNot, Rakuten
+
+MARKETING CHANNELS:
+
+1. Social Media:
+   - TikTok: Short videos showing "I earned $X from receipts"
+   - Instagram: Infographics on passive income
+   - Reddit: r/beermoney, r/passive_income
+
+2. Content Marketing:
+   - Blog: "How to Make $100/Month Scanning Receipts"
+   - YouTube: Tutorial videos, earnings updates
+   - Email: Weekly tips, new features
+
+3. Referral Program:
+   - Offer: $1 bonus for both referrer and referee
+   - Track: Unique referral codes
+   - Incentivize: Leaderboard for top referrers
+
+===============================================================================
+TECHNICAL ROADMAP & MILESTONES
+===============================================================================
+
+MVP LAUNCH (Week 4):
+- Core OCR with basic preprocessing
+- Regex-based parsing (date, total, merchant)
+- CSV/JSON export
+- Basic logging
+- Manual upload instructions
+
+VERSION 1.1 (Week 6):
+- Google Drive integration
+- Dual-format logging
+- Enhanced preprocessing (rotation correction)
+- Earnings estimation display
+
+VERSION 1.2 (Week 8):
+- Fetch/Ibotta API integration (if partnerships secured)
+- GUI settings interface (Tkinter)
+- Batch processing
+- Advanced item parsing
+
+VERSION 2.0 (Month 3):
+- Mobile app (React Native)
+- Camera integration for real-time scanning
+- Cloud sync for cross-device
+- Analytics dashboard
+- Push notifications for earnings
+
+VERSION 2.5 (Month 6):
+- Machine learning for parsing accuracy
+- Multi-language support (Spanish, French)
+- Data marketplace for aggregated insights
+- Premium tier ($4.99/month) with advanced features
+
+LONG-TERM (Year 1):
+- Business tier for expense management
+- Integration with accounting software (QuickBooks, Xero)
+- API for third-party developers
+- White-label solutions for enterprises
+
+===============================================================================
+RISK MITIGATION & COMPLIANCE
+===============================================================================
+
+LEGAL CONSIDERATIONS:
+
+1. Data Privacy:
+   - Comply with GDPR (EU), CCPA (California)
+   - Implement data deletion on request
+   - Anonymize data before sales
+   - Privacy policy clearly stating data usage
+
+2. API Terms of Service:
+   - Fetch/Ibotta: Review partner agreements
+   - Google Drive: Comply with API usage limits
+   - OCR: Tesseract is open-source (Apache 2.0)
+
+3. Financial Regulations:
+   - Not a payment processor (users receive rewards directly)
+   - Disclose estimated earnings (not guaranteed)
+   - Tax implications: Users responsible for reporting income
+
+SECURITY:
+
+1. Encryption:
+   - AES-256 for API keys (government-grade)
+   - HTTPS for all API calls
+   - Secure passphrase storage (never on disk)
+
+2. Data Protection:
+   - Receipt images stored locally only
+   - Cloud uploads with user consent
+   - Option to delete after processing
+
+3. Vulnerability Testing:
+   - Regular security audits
+   - Dependency updates (requirements.txt)
+   - Penetration testing before public launch
+
+===============================================================================
+SUCCESS METRICS & KPIs
+===============================================================================
+
+TECHNICAL METRICS:
+- OCR accuracy: >90% on clean receipts
+- Parsing confidence: >80% average
+- Processing time: <30 seconds per receipt
+- Error rate: <5% failed scans
+
+USER METRICS:
+- Daily Active Users (DAU): Target 1,000 by Month 3
+- Receipts per user per month: Target 10
+- User retention: >50% Month-over-Month
+- Referral conversion: >10%
+
+REVENUE METRICS:
+- Average earnings per receipt: $0.15
+- Monthly revenue: Target $2,000 by Month 6
+- Revenue per user: Target $1.50/month
+- Partnership conversion: 2+ partnerships by Month 4
+
+ENGAGEMENT METRICS:
+- App Store rating: Target 4.5+ stars
+- Review count: Target 100+ by Month 3
+- Support tickets: <5% of active users
+- Feature adoption: >60% use exports
+
+===============================================================================
+SUPPORT & DOCUMENTATION
+===============================================================================
+
+USER DOCUMENTATION:
+1. README.md: Installation, setup, usage instructions
+2. FAQ.md: Common questions (earnings, uploads, troubleshooting)
+3. PRIVACY.md: Data handling, security, compliance
+4. CHANGELOG.md: Version history, new features
+
+DEVELOPER DOCUMENTATION:
+1. API.md: Internal API reference for modules
+2. CONTRIBUTING.md: Guidelines for contributors
+3. ARCHITECTURE.md: System design, data flow
+4. TESTING.md: Test procedures, CI/CD setup
+
+VIDEO TUTORIALS:
+1. "Getting Started" (5 min): Installation to first scan
+2. "Maximizing Earnings" (8 min): Upload strategies, partnerships
+3. "Troubleshooting" (6 min): Common errors, solutions
+4. "Advanced Features" (10 min): Batch processing, exports
+
+===============================================================================
+NEXT STEPS & ACTION ITEMS
+===============================================================================
+
+IMMEDIATE (This Week):
+1. ☐ Update requirements.txt with all dependencies
+2. ☐ Implement encryption.py with AES-256
+3. ☐ Create setup.py wizard
+4. ☐ Add passphrase prompt to main.py
+5. ☐ Test encryption with sample config
+
+WEEK 2:
+6. ☐ Implement dual-format logging system
+7. ☐ Enhance receipt_model.py with regex parsing
+8. ☐ Upgrade ocr.py with advanced preprocessing
+9. ☐ Test parsing accuracy on 10+ receipts
+10. ☐ Document parsing patterns
+
+WEEK 3:
+11. ☐ Implement Google Drive uploader
+12. ☐ Add CSV/JSON export functionality
+13. ☐ Create test suite (unittest)
+14. ☐ Integrate components in main.py
+15. ☐ End-to-end testing
+
+WEEK 4:
+16. ☐ Polish user interface (CLI)
+17. ☐ Write README and documentation
+18. ☐ Create demo video
+19. ☐ Apply for Fetch/Ibotta partnerships
+20. ☐ Launch MVP!
+
+WEEK 5-6:
+21. ☐ Gather user feedback
+22. ☐ Fix bugs and improve accuracy
+23. ☐ Optimize app store listing
+24. ☐ Start marketing campaigns
+25. ☐ Monitor analytics and KPIs
+
+===============================================================================
+CONCLUSION
+===============================================================================
+
+This comprehensive plan provides a roadmap for building a receipt scanner app
+that enables users to monetize their receipts through multiple channels. The
+technical implementation is feasible with Python, open-source libraries, and
+cloud services. The monetization potential is significant at scale, with 
+conservative estimates of $0.10-$0.30 per receipt.
+
+Key success factors:
+1. High OCR accuracy through advanced preprocessing
+2. User-friendly upload workflows (Google Drive + exports)
+3. Robust security with AES-256 encryption
+4. Comprehensive logging for earnings tracking
+5. Strategic partnerships with Fetch, Ibotta, and data buyers
+6. Effective user acquisition through ASO and marketing
+
+Next: Begin implementation with Phase 1 (encryption and security foundation).
+Progress will be tracked through this plan, with updates as features are
+completed. Target MVP launch in 4 weeks, with iterative improvements based
+on user feedback and partnership developments.
+
+For questions or clarifications, refer to the documentation or reach out
+to the development team.
+
+===============================================================================
+END OF IMPLEMENTATION PLAN
+===============================================================================

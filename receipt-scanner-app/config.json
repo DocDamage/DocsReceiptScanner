@@ -1,0 +1,16 @@
+{
+  "input_image_path": "path/to/input/images",
+  "output_directory": "path/to/output/directory",
+  "ocr_settings": {
+    "language": "eng",
+    "tessdata_dir": "path/to/tessdata",
+    "psm": 6
+  },
+  "image_processing": {
+    "resize": {
+      "width": 800,
+      "height": 600
+    },
+    "enhancement": true
+  }
+}
